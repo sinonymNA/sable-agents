@@ -57,6 +57,13 @@ def run_agents_job():
         print(f"Agents complete in {elapsed:.1f}s")
         print(f"Audio URL: {audio_url}")
         logger.info(f"Agent run job complete in {elapsed:.1f}s")
+
+        try:
+            from sms.handler import notify_briefing_complete
+            notify_briefing_complete(script, audio_url)
+        except Exception as _sms_exc:
+            logger.warning(f"Briefing complete SMS failed: {_sms_exc}")
+
         return script, audio_url
 
     except Exception as e:

@@ -113,12 +113,17 @@ class SableMarketing:
 
             for piece in result.get("content_pieces", []):
                 if piece.get("ready_to_approve"):
-                    log_approval(
+                    approval = log_approval(
                         agent="marketing",
                         content_type=piece.get("type", "post"),
                         content_text=piece.get("content", ""),
                         platform=piece.get("platform", ""),
                     )
+                    try:
+                        from sms.handler import notify_new_approval
+                        notify_new_approval(approval)
+                    except Exception as _sms_exc:
+                        logger.warning(f"Approval SMS notify failed: {_sms_exc}")
 
             logger.info("Marketing agent completed")
         except Exception as exc:

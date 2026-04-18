@@ -81,6 +81,15 @@ def decide_approval(approval_id: int, action: ApprovalAction):
     return {"id": approval_id, "status": action.status}
 
 
+@app.post("/api/run-now")
+def run_now():
+    import threading
+    from scheduler.jobs import run_agents_job
+    t = threading.Thread(target=run_agents_job, daemon=True)
+    t.start()
+    return {"status": "started", "message": "Agent pipeline running. You'll get an SMS when done."}
+
+
 @app.post("/api/sms/webhook")
 async def sms_webhook(
     Body: str = Form(default=""),

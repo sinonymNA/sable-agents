@@ -1,6 +1,9 @@
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
 
@@ -12,6 +15,8 @@ from db.models import (
 )
 from scheduler.jobs import start_scheduler, stop_scheduler
 
+os.makedirs("/tmp", exist_ok=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,6 +27,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Sable Agents", lifespan=lifespan)
+app.mount("/audio", StaticFiles(directory="/tmp"), name="audio")
 
 
 class ApprovalAction(BaseModel):
@@ -76,8 +82,13 @@ def decide_approval(approval_id: int, action: ApprovalAction):
 
 
 @app.post("/api/sms/webhook")
-async def sms_webhook(Body: str = "", From: str = "", To: str = ""):
+async def sms_webhook(
+    Body: str = Form(default=""),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+):
     from sms.handler import handle_incoming
-    response_body = await handle_incoming(Body, From)
-    # Return TwiML
-    return {"message": response_body}
+    reply = await handle_incoming(Body, From)
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response><Message>{reply}</Message></Response>"""
+    return Response(content=twiml, media_type="application/xml")

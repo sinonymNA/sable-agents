@@ -1,69 +1,84 @@
-import asyncio
 import os
+import time
+import traceback
 from datetime import date
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 
-scheduler = AsyncIOScheduler(timezone="America/New_York")
+scheduler = BackgroundScheduler(timezone="America/New_York")
 
 
-async def run_agents_job() -> None:
-    """Run all four agents and save briefing sections to DB."""
+def run_agents_job():
+    """Run all four agents, synthesize, generate audio, and save to DB."""
     logger.info("Starting agent run job")
-    from agents import business, finance, guide, marketing
-    from briefing.synthesizer import synthesize
-    from db.models import save_briefing
+    start = time.time()
 
-    results = await asyncio.gather(
-        business.run(),
-        marketing.run(),
-        finance.run(),
-        guide.run(),
-        return_exceptions=True,
-    )
+    try:
+        from agents.finance import SableFinance
+        finance_out = SableFinance().run()
+        logger.info("Finance agent done")
 
-    biz, mkt, fin, gui = [
-        r if isinstance(r, dict) else {"summary": str(r), "raw_output": str(r), "status": "error"}
-        for r in results
-    ]
+        from agents.business import SableBusiness
+        business_out = SableBusiness().run()
+        logger.info("Business agent done")
 
-    script = await synthesize(biz, mkt, fin, gui)
-    today = date.today().isoformat()
-    save_briefing(
-        date_str=today,
-        business=biz.get("raw_output", ""),
-        marketing=mkt.get("raw_output", ""),
-        finance=fin.get("raw_output", ""),
-        guide=gui.get("raw_output", ""),
-        full_text=script,
-    )
-    logger.info(f"Agent run job complete for {today}")
+        from agents.marketing import SableMarketing
+        marketing_out = SableMarketing().run(business_out)
+        logger.info("Marketing agent done")
+
+        from agents.guide import SableGuide
+        guide_out = SableGuide().run(finance_out, business_out, marketing_out)
+        logger.info("Guide agent done")
+
+        from briefing.synthesizer import synthesize
+        script = synthesize(finance_out, business_out, marketing_out, guide_out)
+        logger.info("Briefing synthesized")
+
+        from briefing.voice import convert_to_audio
+        today_str = str(date.today())
+        audio_url = convert_to_audio(script, today_str)
+        logger.info(f"Audio URL: {audio_url}")
+
+        from db.models import save_briefing, update_briefing
+        save_briefing(
+            date_str=today_str,
+            business=business_out.get("spoken_summary", ""),
+            marketing=marketing_out.get("spoken_summary", ""),
+            finance=finance_out.get("spoken_summary", ""),
+            guide=guide_out.get("spoken_summary", ""),
+            full_text=script,
+        )
+        if audio_url:
+            update_briefing(today_str, audio_url=audio_url)
+
+        elapsed = time.time() - start
+        print(f"Agents complete in {elapsed:.1f}s")
+        print(f"Audio URL: {audio_url}")
+        logger.info(f"Agent run job complete in {elapsed:.1f}s")
+        return script, audio_url
+
+    except Exception as e:
+        print(f"Agent run failed: {e}")
+        traceback.print_exc()
+        logger.error(f"Agent run job failed: {e}")
+        return None, None
 
 
-async def send_briefing_job() -> None:
-    """Generate audio and place the morning call."""
+def send_briefing_job():
+    """Place morning call using audio URL saved by run_agents_job."""
     logger.info("Starting briefing call job")
     from briefing.call import place_call
-    from briefing.voice import generate_audio
-    from db.models import get_todays_briefing, update_briefing
+    from db.models import get_todays_briefing
 
     briefing = get_todays_briefing()
-    if not briefing or not briefing.full_text:
-        logger.warning("No briefing found for today — skipping call")
+    if not briefing or not briefing.audio_url:
+        logger.warning("No briefing audio found for today — skipping call")
         return
 
-    voice_id = os.environ.get("ELEVENLABS_VOICE_BUSINESS", "")
-    audio_path = await generate_audio(briefing.full_text, voice_id)
-
-    # In production, upload audio_path to a public URL (e.g. S3/R2) before calling.
-    # For now we pass the path directly — replace with your upload logic.
-    audio_url = audio_path
-    update_briefing(briefing.date, audio_url=audio_url)
-
-    place_call(audio_url)
-    logger.info("Briefing call job complete")
+    place_call(briefing.audio_url)
+    logger.info("Briefing call placed")
 
 
 def _parse_time(env_var: str, default: str) -> tuple[int, int]:
@@ -89,7 +104,10 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.start()
-    logger.info(f"Scheduler started — agents at {agent_h:02d}:{agent_m:02d} ET, call at {call_h:02d}:{call_m:02d} ET")
+    logger.info(
+        f"Scheduler started — agents at {agent_h:02d}:{agent_m:02d} ET, "
+        f"call at {call_h:02d}:{call_m:02d} ET"
+    )
 
 
 def stop_scheduler() -> None:

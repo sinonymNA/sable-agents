@@ -5,7 +5,7 @@ import anthropic
 from loguru import logger
 
 _SYSTEM = """You are the Sable Briefing Synthesizer.
-You receive four agent reports — Business, Marketing, Finance, and Guide — and
+You receive four agent reports — Finance, Business, Marketing, and Guide — and
 weave them into a single, natural-sounding voice briefing script.
 
 Rules:
@@ -17,32 +17,39 @@ Rules:
 - Do NOT add fabricated facts. If a section is thin, compress it gracefully."""
 
 
-async def synthesize(
+def synthesize(
+    finance: dict[str, Any],
     business: dict[str, Any],
     marketing: dict[str, Any],
-    finance: dict[str, Any],
     guide: dict[str, Any],
 ) -> str:
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY not set — returning fallback briefing script")
+        return (
+            "Good morning. The Sable briefing pipeline completed agent runs but "
+            "Claude API is not configured. Set ANTHROPIC_API_KEY to enable synthesis."
+        )
+    client = anthropic.Anthropic(api_key=api_key)
 
     prompt = f"""Here are today's four agent reports. Synthesize them into a single voice briefing script.
 
+--- FINANCE ---
+{finance.get('spoken_summary') or finance.get('raw_output', '')}
+
 --- BUSINESS ---
-{business.get('raw_output', business.get('summary', ''))}
+{business.get('spoken_summary') or business.get('raw_output', '')}
 
 --- MARKETING ---
-{marketing.get('raw_output', marketing.get('summary', ''))}
-
---- FINANCE ---
-{finance.get('raw_output', finance.get('summary', ''))}
+{marketing.get('spoken_summary') or marketing.get('raw_output', '')}
 
 --- GUIDE ---
-{guide.get('raw_output', guide.get('summary', ''))}
+{guide.get('spoken_summary') or guide.get('raw_output', '')}
 
 Now write the voice briefing script."""
 
     message = client.messages.create(
-        model="claude-opus-4-7",
+        model="claude-sonnet-4-6",
         max_tokens=1024,
         system=_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

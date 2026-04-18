@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import time
 from typing import Any
 
@@ -7,43 +9,86 @@ from loguru import logger
 
 from db.models import log_agent_run
 
-_SYSTEM = """You are the Daily Guide Agent for Sable.
-Your job is to give the operator a personal operating system for the day — the
-human layer that sits above the business, marketing, and finance briefings.
+_SYSTEM = """You are Sable Guide, the chief of staff for Sable. The other three agents report \
+to you. You read everything they found, identify conflicts, and give Ethan one clear directive \
+for the week.
 
-Each morning produce:
-1. One mindset or framing insight for the day (drawn from philosophy, stoicism,
-   or high-performance research)
-2. A suggested time-block structure for a high-leverage morning
-3. One question to sit with throughout the day
+Ethan's constraints:
+- Teaches Monday through Friday
+- Acts only during prep periods, after school, and weekends
+- JT is his only sales resource for FreshUp
+- 20-day paper trading gate cannot be rushed
+- High capability, limited time
 
-Keep it grounded, not motivational-poster generic. Make it feel like advice
-from a trusted mentor who knows this operator well."""
+Never give more than one primary directive per day. Resolve conflicts between what Business \
+wants and what Finance says is realistic. Protect Ethan's time ruthlessly.
+
+Respond ONLY in this JSON, no preamble, no markdown:
+{
+  "weekly_directive": str,
+  "why_this_over_everything_else": str,
+  "what_to_stop": str,
+  "conflicts_resolved": [str],
+  "for_jt": str,
+  "for_alex": str,
+  "spoken_summary": str
+}"""
 
 
-async def run() -> dict[str, Any]:
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    start = time.time()
-    status = "success"
-    summary = raw = ""
+def _parse_json(text: str) -> dict:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text.strip())
+    return json.loads(text)
 
-    try:
-        today = time.strftime("%A, %B %d, %Y")
-        message = client.messages.create(
-            model="claude-opus-4-7",
-            max_tokens=1024,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": f"Today is {today}. Deliver this morning's guide."}],
+
+class SableGuide:
+    def run(
+        self,
+        finance_out: dict,
+        business_out: dict,
+        marketing_out: dict,
+    ) -> dict[str, Any]:
+        start = time.time()
+
+        user_payload = {
+            "finance": finance_out,
+            "business": business_out,
+            "marketing": marketing_out,
+        }
+
+        result: dict[str, Any] = {
+            "weekly_directive": "",
+            "why_this_over_everything_else": "",
+            "what_to_stop": "",
+            "conflicts_resolved": [],
+            "for_jt": None,
+            "for_alex": None,
+            "spoken_summary": "",
+        }
+
+        status = "success"
+        try:
+            client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            message = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=_SYSTEM,
+                messages=[{"role": "user", "content": json.dumps(user_payload)}],
+            )
+            parsed = _parse_json(message.content[0].text)
+            result.update(parsed)
+            logger.info("Guide agent completed")
+        except Exception as exc:
+            status = "error"
+            result["spoken_summary"] = str(exc)
+            logger.error(f"Guide agent error: {exc}")
+
+        duration = round(time.time() - start, 2)
+        log_agent_run(
+            "guide", status,
+            result.get("spoken_summary", "")[:300],
+            json.dumps(result),
+            duration,
         )
-        raw = message.content[0].text
-        summary = raw[:300]
-        logger.info("Guide agent completed")
-    except Exception as exc:
-        status = "error"
-        summary = str(exc)
-        raw = str(exc)
-        logger.error(f"Guide agent error: {exc}")
-
-    duration = round(time.time() - start, 2)
-    log_agent_run("guide", status, summary, raw, duration)
-    return {"summary": summary, "raw_output": raw, "duration_seconds": duration, "status": status}
+        return result

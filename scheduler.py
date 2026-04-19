@@ -79,12 +79,31 @@ scheduler.add_job(
     replace_existing=True,
 )
 
+
+def run_trends_scout():
+    logger.info("--- TrendsScout starting ---")
+    try:
+        from agents.trends_scout import TrendsScout
+        TrendsScout().run()
+        logger.info("--- TrendsScout complete ---")
+    except Exception as exc:
+        logger.error(f"TrendsScout failed: {exc}")
+
+
+scheduler.add_job(
+    run_trends_scout,
+    CronTrigger(hour=6, minute=5, timezone="America/New_York"),
+    id="trends_scout",
+    replace_existing=True,
+)
+
 if __name__ == "__main__":
     logger.info("Sable Scheduler starting")
     logger.info("  SalesScout    → daily 7:45 AM ET")
     logger.info("  FinanceAgent  → every Monday 8:00 AM ET")
     logger.info("  TradeMonitor  → every hour")
     logger.info("  ContentScout  → daily 6:00 AM ET")
+    logger.info("  TrendsScout   → daily 6:05 AM ET")
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

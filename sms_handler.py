@@ -35,10 +35,14 @@ async def sms_webhook(
     From: str = Form(default=""),
     To: str = Form(default=""),
 ):
-    cmd = Body.strip().upper()
+    cmd = Body.strip()
+    cmd_upper = cmd.upper()
+    first_word = cmd_upper.split()[0] if cmd_upper.split() else ""
+    rest = cmd[len(first_word):].strip()   # preserves original casing for product names
+
     resp = MessagingResponse()
 
-    if cmd in ("HELLO", "HI", "HEY", "START", "STATUS"):
+    if cmd_upper in ("HELLO", "HI", "HEY", "START", "STATUS"):
         trade = _load_trade()
         resp.message(
             f"Sable is active.\n"
@@ -48,17 +52,21 @@ async def sms_webhook(
             f"Text HELP for commands."
         )
 
-    elif cmd == "HELP":
+    elif cmd_upper == "HELP":
         resp.message(
             "Sable commands:\n"
             "STATUS — system status\n"
             "TRADES — trade monitor snapshot\n"
             "CONTENT — generate content ideas now\n"
             "SALES — trigger sales brief now\n"
+            "TRENDS — scan Google Trends for dropshipping products\n"
+            "TRENDS [product] — scan for a specific product\n"
+            "SHOP [product] — create Shopify listing\n"
+            "BRAND [product] — generate & schedule social posts\n"
             "HELP — this list"
         )
 
-    elif cmd == "TRADES":
+    elif cmd_upper == "TRADES":
         trade = _load_trade()
         resp.message(
             f"Sable Stocks\n"
@@ -68,13 +76,35 @@ async def sms_webhook(
             f"Status: {trade['status']}"
         )
 
-    elif cmd == "CONTENT":
+    elif cmd_upper == "CONTENT":
         threading.Thread(target=_run_content_scout, daemon=True).start()
         resp.message("Running ContentScout now. Ideas on the way.")
 
-    elif cmd == "SALES":
+    elif cmd_upper == "SALES":
         threading.Thread(target=_run_sales_scout, daemon=True).start()
         resp.message("Running SalesScout now. Brief on the way to JT.")
+
+    elif first_word == "TRENDS":
+        hint = rest if rest else None
+        threading.Thread(target=_run_trends_scout, args=(hint,), daemon=True).start()
+        if hint:
+            resp.message(f"Scanning trends for '{hint}'. Results on the way.")
+        else:
+            resp.message("Scanning all 6 categories. Top 3 opportunities incoming.")
+
+    elif first_word == "SHOP":
+        if not rest:
+            resp.message("Tell me the product. Example:\nSHOP electric lash curler")
+        else:
+            threading.Thread(target=_run_shopify_agent, args=(rest,), daemon=True).start()
+            resp.message(f"Creating Shopify draft listing for '{rest}'. Admin link incoming.")
+
+    elif first_word == "BRAND":
+        if not rest:
+            resp.message("Tell me the product. Example:\nBRAND foam roller set")
+        else:
+            threading.Thread(target=_run_branding_agent, args=(rest,), daemon=True).start()
+            resp.message(f"Generating social posts for '{rest}'. Scheduling to Buffer now.")
 
     else:
         resp.message(
@@ -189,9 +219,25 @@ def _run_sales_scout():
         logger.error(f"SalesScout on-demand failed: {exc}")
 
 
-def _run_all_agents():
-    for fn in [_run_sales_scout, _run_content_scout]:
-        try:
-            fn()
-        except Exception as exc:
-            logger.error(f"On-demand agent failed: {exc}")
+def _run_trends_scout(product_hint: str | None = None):
+    try:
+        from agents.trends_scout import TrendsScout
+        TrendsScout().run(product_hint=product_hint)
+    except Exception as exc:
+        logger.error(f"TrendsScout on-demand failed: {exc}")
+
+
+def _run_shopify_agent(product_name: str):
+    try:
+        from agents.shopify_agent import ShopifyAgent
+        ShopifyAgent().run(product_name=product_name)
+    except Exception as exc:
+        logger.error(f"ShopifyAgent on-demand failed: {exc}")
+
+
+def _run_branding_agent(product_name: str):
+    try:
+        from agents.branding_agent import BrandingAgent
+        BrandingAgent().run(product_name=product_name)
+    except Exception as exc:
+        logger.error(f"BrandingAgent on-demand failed: {exc}")

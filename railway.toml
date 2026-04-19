@@ -2,6 +2,9 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1"
-healthcheckPath = "/api/health"
+startCommand = "uvicorn sms_handler:app --host 0.0.0.0 --port $PORT --workers 1"
+healthcheckPath = "/health"
 healthcheckTimeout = 120
+
+# To run the scheduler worker, create a second Railway service from the same repo
+# and set startCommand = "python scheduler.py"

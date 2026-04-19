@@ -9,6 +9,8 @@ from loguru import logger
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import Gather, VoiceResponse
 
+from voice_agent import clear_session, marcus_respond
+
 load_dotenv()
 
 app = FastAPI(title="Sable SMS Handler")
@@ -84,7 +86,7 @@ async def sms_webhook(
 
 
 # ---------------------------------------------------------------------------
-# Voice webhooks
+# Voice webhooks — conversational Marcus COS
 # ---------------------------------------------------------------------------
 
 @app.post("/call")
@@ -93,51 +95,60 @@ async def call_webhook(
     From: str = Form(default=""),
 ):
     resp = VoiceResponse()
-    gather = Gather(num_digits=1, action="/call-respond", timeout=10)
-    gather.say(
-        "You've reached Sable. "
-        "Press 1 for a status update. "
-        "Press 2 to run all agents now. "
-        "Press 3 to hear the trade monitor status."
+    gather = Gather(
+        input="speech",
+        action="/voice-respond",
+        speechTimeout="auto",
+        timeout=8,
     )
+    gather.say("Marcus here. What's on your agenda?", voice="Polly.Matthew")
     resp.append(gather)
-    resp.say("No input received. Goodbye.")
+    resp.say("I didn't catch that. Call back when you're ready.", voice="Polly.Matthew")
     return Response(content=str(resp), media_type="application/xml")
 
 
-@app.post("/call-respond")
-async def call_respond(
-    Digits: str = Form(default=""),
+@app.post("/voice-respond")
+async def voice_respond(
+    SpeechResult: str = Form(default=""),
     CallSid: str = Form(default=""),
 ):
+    if not SpeechResult.strip():
+        resp = VoiceResponse()
+        gather = Gather(input="speech", action="/voice-respond", speechTimeout="auto", timeout=8)
+        gather.say("Sorry, I didn't catch that. Go ahead.", voice="Polly.Matthew")
+        resp.append(gather)
+        resp.say("Talk soon.", voice="Polly.Matthew")
+        return Response(content=str(resp), media_type="application/xml")
+
+    segments, should_end = marcus_respond(CallSid, SpeechResult)
+
     resp = VoiceResponse()
-    trade = _load_trade()
 
-    if Digits == "1":
-        resp.say(
-            f"All Sable agents are active. "
-            f"Trade gate is on day {trade['gate_day']} of {trade['gate_total']}. "
-            f"Daily P and L is {trade['daily_pnl']} dollars. "
-            f"Status is {trade['status']}. "
-            f"Sales scout and content scout run daily. Finance agent runs weekly. Goodbye."
-        )
-    elif Digits == "2":
-        threading.Thread(target=_run_all_agents, daemon=True).start()
-        resp.say(
-            "Running all agents now. You will receive text updates shortly. Goodbye."
-        )
-    elif Digits == "3":
-        resp.say(
-            f"Trade monitor status: "
-            f"Gate day {trade['gate_day']} of {trade['gate_total']}. "
-            f"Daily P and L: {trade['daily_pnl']} dollars. "
-            f"Last trade: {trade['last_trade']}. "
-            f"Status: {trade['status']}. Goodbye."
-        )
-    else:
-        resp.say("Invalid input. Goodbye.")
+    if should_end:
+        for seg in segments:
+            resp.say(seg["text"], voice=seg["voice"])
+        clear_session(CallSid)
+        return Response(content=str(resp), media_type="application/xml")
 
+    gather = Gather(input="speech", action="/voice-respond", speechTimeout="auto", timeout=8)
+    for i, seg in enumerate(segments):
+        gather.say(seg["text"], voice=seg["voice"])
+        if i < len(segments) - 1:
+            gather.pause(length=1)
+    resp.append(gather)
+    resp.say("Talk soon.", voice="Polly.Matthew")
     return Response(content=str(resp), media_type="application/xml")
+
+
+@app.post("/call-status")
+async def call_status(
+    CallSid: str = Form(default=""),
+    CallStatus: str = Form(default=""),
+):
+    if CallStatus in ("completed", "busy", "failed", "no-answer", "canceled"):
+        clear_session(CallSid)
+        logger.info(f"Call {CallSid} ended ({CallStatus}) — session cleared")
+    return Response(content="", status_code=204)
 
 
 # ---------------------------------------------------------------------------

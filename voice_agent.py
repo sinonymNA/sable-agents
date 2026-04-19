@@ -1,8 +1,12 @@
 import os
 import re
+import time
 
 from anthropic import Anthropic
 from loguru import logger
+
+_MODEL = "claude-haiku-4-5-20251001"
+_CLAUDE_TIMEOUT = 6.0
 
 _sessions: dict[str, dict] = {}
 
@@ -73,6 +77,33 @@ def clear_session(call_sid: str) -> None:
     _sessions.pop(call_sid, None)
 
 
+def _call_claude(system: str, messages: list, max_tokens: int, label: str) -> str:
+    """Call Claude with a tight timeout and one retry. Raises on final failure."""
+    client = Anthropic(
+        api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        timeout=_CLAUDE_TIMEOUT,
+    )
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = client.messages.create(
+                model=_MODEL,
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+            return response.content[0].text.strip()
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                f"{label} Claude attempt {attempt + 1} failed: {type(exc).__name__}: {exc}"
+            )
+            if attempt == 0:
+                time.sleep(0.3)
+    assert last_exc is not None
+    raise last_exc
+
+
 def marcus_respond(call_sid: str, user_input: str) -> tuple[list[dict], bool]:
     """
     Process user speech and return (segments, should_end).
@@ -81,19 +112,16 @@ def marcus_respond(call_sid: str, user_input: str) -> tuple[list[dict], bool]:
     session = get_session(call_sid)
     session["history"].append({"role": "user", "content": user_input})
 
-    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-
     try:
-        response = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=300,
+        marcus_text = _call_claude(
             system=_COS_SYSTEM,
             messages=session["history"],
+            max_tokens=300,
+            label="Marcus",
         )
-        marcus_text = response.content[0].text.strip()
     except Exception as exc:
-        logger.error(f"Marcus Claude call failed: {exc}")
-        marcus_text = "I'm having trouble right now. Try again in a moment."
+        logger.error(f"Marcus Claude call failed after retry: {type(exc).__name__}: {exc}")
+        marcus_text = "I'm getting a connection hiccup. Can you say that one more time?"
 
     session["history"].append({"role": "assistant", "content": marcus_text})
 
@@ -132,15 +160,19 @@ def _get_agent_response(agent_name: str, history: list) -> str:
     if not system:
         logger.warning(f"Unknown agent requested: {agent_name}")
         return ""
-    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
     try:
-        response = client.messages.create(
-            model="claude-3-haiku-20240307",
-            max_tokens=128,
+        return _call_claude(
             system=system,
             messages=history[-6:],
+            max_tokens=128,
+            label=f"Agent[{agent_name}]",
         )
-        return response.content[0].text.strip()
     except Exception as exc:
-        logger.error(f"Agent {agent_name} response failed: {exc}")
-        return "I'm having trouble connecting right now."
+        logger.error(f"Agent {agent_name} response failed after retry: {type(exc).__name__}: {exc}")
+        fallbacks = {
+            "jt": "Focus today on dealerships with under fifty reps — they decide faster. Call three by noon.",
+            "trade": "Still on day one of the twenty-day gate. No trades yet. Paper account is clean.",
+            "content": "Write about the gap between people who talk about building systems and people who ship them. That's the lane.",
+            "finance": "Week one position: zero revenue, a hundred and sixty-seven in expenses. Runway is fine. Ship product.",
+        }
+        return fallbacks.get(agent_name, "I'm offline at the moment. Try again shortly.")
